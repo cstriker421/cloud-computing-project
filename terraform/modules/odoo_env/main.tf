@@ -183,6 +183,7 @@ db_host = ${kubernetes_service_v1.db.metadata[0].name}
 db_port = 5432
 db_user = ${local.db_user}
 db_password = ${local.db_pass}
+db_name = ${local.db_name}
 
 ; IMPORTANT: make Odoo respect X-Forwarded-* headers from ingress
 proxy_mode = True

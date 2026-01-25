@@ -5,13 +5,14 @@ usage() {
   cat <<'EOF'
 usage:
   ./scripts/update-hosts.sh <client>
+  ./scripts/update-hosts.sh            # uses terraform outputs in ./terraform
   ./scripts/update-hosts.sh --all
 
 clients: airbnb | nike | mcdonalds
 EOF
 }
 
-# env lists (keep in sync with terraform/variables.tf)
+# env lists (fallback; keep in sync with terraform/variables.tf)
 declare -A envs
 envs[airbnb]="dev prod"
 envs[nike]="dev qa prod"
@@ -22,23 +23,19 @@ clients=("airbnb" "nike" "mcdonalds")
 get_ip_for_client() {
   local client="$1"
 
-  # 1) Prefers minikube profile IP if profile exists
   if minikube profile list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$client"; then
     minikube -p "$client" ip
     return 0
   fi
 
-  # 2) Fallback: terraform output (recommended)
-  # Expects terraform to run from repo root or within terraform
-  if [[ -d "terraform" ]]; then
-    (cd terraform && terraform output -raw minikube_ip 2>/dev/null) && return 0
-  fi
-  terraform output -raw minikube_ip 2>/dev/null && return 0
-
-  echo "ERROR: Could not determine IP for client '$client'." >&2
-  echo " - minikube profile '$client' not found" >&2
-  echo " - terraform output 'minikube_ip' not found" >&2
+  echo "ERROR: minikube profile '$client' not found (can't determine IP)." >&2
   return 1
+}
+
+tf_output_raw() {
+  local name="$1"
+  [[ -d "terraform" ]] || return 1
+  (cd terraform && terraform output -raw "$name" 2>/dev/null)
 }
 
 write_hosts_block() {
@@ -90,11 +87,36 @@ main() {
   fi
 
   local client="${1:-}"
-  if [[ -z "$client" ]]; then usage; exit 2; fi
-  if [[ -z "${envs[$client]:-}" ]]; then
+  local env_list=""
+
+  # No args? Derive from terraform outputs (recommended)
+  if [[ -z "$client" ]]; then
+    client="$(tf_output_raw client || true)"
+    if [[ -z "$client" ]]; then
+      usage
+      echo "\nERROR: no <client> provided and couldn't read terraform outputs (run from repo root after 'terraform apply')." >&2
+      exit 2
+    fi
+    env_list="$(tf_output_raw envs || true)"
+  fi
+
+  # Validate client
+  if [[ " ${clients[*]} " != *" $client "* ]]; then
     echo "ERROR: unknown client '$client' (expected: airbnb|nike|mcdonalds)" >&2
     exit 2
   fi
+
+  # Determine env list
+  if [[ -z "$env_list" ]]; then
+    env_list="${envs[$client]:-}"
+  fi
+  if [[ -z "$env_list" ]]; then
+    echo "ERROR: no env list for client '$client'" >&2
+    exit 2
+  fi
+
+  # Override envs map for this run
+  envs[$client]="$env_list"
 
   ip="$(get_ip_for_client "$client")"
   write_hosts_block "$client" "$ip"
